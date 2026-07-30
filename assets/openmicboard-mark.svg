@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">OpenMicBoard waveform mark</title>
+  <rect width="512" height="512" rx="116" fill="#101315"/>
+  <path d="M104 270h45l27-78 42 151 48-206 44 166 28-88 24 55h46"
+        fill="none"
+        stroke="#9fe7d7"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="34"/>
+  <circle cx="408" cy="270" r="17" fill="#f4f7f6"/>
+</svg>

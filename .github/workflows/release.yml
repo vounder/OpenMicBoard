@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+      - name: Build release artifacts
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          ./scripts/Build-Release.ps1 -Version $version -Architectures "${{ matrix.architecture }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.architecture }}
+          path: artifacts/release/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Rebuild combined checksums
+        shell: bash
+        run: |
+          cd release
+          rm -f SHA256SUMS.txt
+          sha256sum OpenMicBoard-* > SHA256SUMS.txt
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/*
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-preview') || contains(github.ref_name, '-rc') }}
+          generate_release_notes: true
+          body: |
+            OpenMicBoard is a local-first Windows 11 24H2+ soundboard for x64 and ARM64.
+
+            These community binaries are currently unsigned, so Windows SmartScreen may warn. Download only from this repository and verify `SHA256SUMS.txt` before running. Each release also includes an SPDX 2.3 SBOM and GitHub build-provenance attestations.
+
+            Use the setup executable for a normal installation or the portable ZIP to keep data beside the application. A virtual audio-cable driver is not bundled.
+          files: release/*

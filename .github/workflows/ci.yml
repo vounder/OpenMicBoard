@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore OpenMicBoard.sln
+      - name: Test
+        run: dotnet test OpenMicBoard.sln -c Release -p:Platform=x64 --no-restore --verbosity normal
+      - name: Build app
+        run: dotnet build src/OpenMicBoard.App/OpenMicBoard.App.csproj -c Release -p:Platform=x64 -r win-x64 --no-restore
+
+  publish:
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish ${{ matrix.architecture }}
+        shell: pwsh
+        run: >
+          dotnet publish src/OpenMicBoard.App/OpenMicBoard.App.csproj
+          -c Release
+          -r win-${{ matrix.architecture }}
+          -p:Platform=${{ matrix.architecture }}
+          --self-contained true
+          -o artifacts/publish/${{ matrix.architecture }}
+      - name: Verify deployable contents
+        shell: pwsh
+        run: |
+          $publishDirectory = "artifacts/publish/${{ matrix.architecture }}"
+          @(
+            "OpenMicBoard.exe",
+            "App.xbf",
+            "MainPage.xbf",
+            "MainWindow.xbf",
+            "OpenMicBoard.pri"
+          ) | ForEach-Object {
+            $path = Join-Path $publishDirectory $_
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required deployable resource is missing: $path"
+            }
+          }
+          $debugSymbols = Get-ChildItem -LiteralPath $publishDirectory -Filter "*.pdb" -File -Recurse
+          if ($debugSymbols) {
+            throw "Release publish unexpectedly contains debug symbols: $($debugSymbols.FullName -join ', ')"
+          }
+      - name: Launch smoke test
+        if: matrix.architecture == 'x64'
+        shell: pwsh
+        run: ./scripts/Smoke-TestPublishedApp.ps1 -PublishDirectory artifacts/publish/x64
+
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject local identity and machine-path leaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -I -n -E \
+            '(C:\\Users\\|C:/Users/|programming_stuff|Documents/Codex|solbounder|191137529\+vounder|@users\.noreply\.github\.com)' \
+            -- ':!*.yml' ':!*.yaml' ':!**/*.yml' ':!**/*.yaml'; then
+            echo "Potential personal or machine-specific data found."
+            exit 1
+          fi
+          if git grep -I -n -E \
+            '(TelemetryClient|ApplicationInsights|Sentry|PostHog|Mixpanel|GoogleAnalytics)' \
+            -- ':!*.yml' ':!*.yaml' ':!**/*.yml' ':!**/*.yaml'; then
+            echo "Unexpected telemetry dependency or API found."
+            exit 1
+          fi

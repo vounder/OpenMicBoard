@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+.vscode/
+artifacts/
+.tools/
+*.user
+*.suo
+*.log
+*.tmp
+*.bak
+OpenMicBoard.portable
