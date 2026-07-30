@@ -2,6 +2,10 @@
 
 All notable changes to OpenMicBoard are documented here.
 
+## Unreleased
+
+- Added prominent file-browser actions and multi-file audio import.
+
 ## 1.0.0 - 2026-07-30
 
 - Initial WinUI soundboard dashboard with a dark graphite and mint visual system.

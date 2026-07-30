@@ -67,20 +67,24 @@ public sealed partial class MainPage : Page
         picker.FileTypeFilter.Add(".mp3");
         picker.FileTypeFilter.Add(".ogg");
         WinRT.Interop.InitializeWithWindow.Initialize(picker, App.WindowHandle);
-        var file = await picker.PickSingleFileAsync();
-        if (file is null)
+        var files = await picker.PickMultipleFilesAsync();
+        if (files.Count == 0)
         {
             return;
         }
 
+        var selectionDescription = files.Count == 1
+            ? "the selected sound"
+            : $"all {files.Count} selected sounds";
         var modeDialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
-            Title = "Add sound",
+            Title = files.Count == 1 ? "Add sound" : $"Add {files.Count} sounds",
             Content =
-                "Copy keeps a private managed copy. Link uses the original file and saves disk space.",
+                $"Choose how to add {selectionDescription}. " +
+                "Copy keeps private managed copies. Link uses the original files and saves disk space.",
             PrimaryButtonText = "Copy to library",
-            SecondaryButtonText = "Link original",
+            SecondaryButtonText = files.Count == 1 ? "Link original" : "Link originals",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary
         };
@@ -90,9 +94,12 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        await ViewModel.ImportSoundAsync(
-            file.Path,
-            mode == ContentDialogResult.Primary);
+        foreach (var file in files)
+        {
+            await ViewModel.ImportSoundAsync(
+                file.Path,
+                mode == ContentDialogResult.Primary);
+        }
     }
 
     private async void OnDeviceSelectionChanged(

@@ -52,11 +52,13 @@
                     Orientation="Horizontal"
                     Spacing="10">
                     <Button
+                        AccessKey="B"
                         Click="OnAddSoundClick"
-                        Style="{StaticResource MintButtonStyle}">
+                        Style="{StaticResource MintButtonStyle}"
+                        ToolTipService.ToolTip="Open the file browser and choose one or more audio files">
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <FontIcon FontSize="14" Glyph="&#xE710;" />
-                            <TextBlock Text="Add sound" />
+                            <FontIcon FontSize="14" Glyph="&#xE8E5;" />
+                            <TextBlock Text="Browse audio files" />
                         </StackPanel>
                     </Button>
                     <Button
@@ -167,6 +169,14 @@
                                 HorizontalAlignment="Right"
                                 Orientation="Horizontal"
                                 Spacing="8">
+                                <Button
+                                    Click="OnAddSoundClick"
+                                    ToolTipService.ToolTip="Choose WAV, MP3, or OGG files">
+                                    <StackPanel Orientation="Horizontal" Spacing="7">
+                                        <FontIcon FontSize="13" Glyph="&#xE8E5;" />
+                                        <TextBlock Text="Browse files" />
+                                    </StackPanel>
+                                </Button>
                                 <ComboBox
                                     MinWidth="170"
                                     ItemsSource="{x:Bind ViewModel.Profiles}"
@@ -280,7 +290,16 @@
                             IsOpen="{x:Bind ViewModel.IsEmpty, Mode=OneWay}"
                             Message="Add a WAV, MP3, or OGG file to create your first pad."
                             Severity="Informational"
-                            Title="Your soundboard is ready." />
+                            Title="Your soundboard is ready.">
+                            <InfoBar.ActionButton>
+                                <Button Click="OnAddSoundClick">
+                                    <StackPanel Orientation="Horizontal" Spacing="7">
+                                        <FontIcon FontSize="13" Glyph="&#xE8E5;" />
+                                        <TextBlock Text="Choose files" />
+                                    </StackPanel>
+                                </Button>
+                            </InfoBar.ActionButton>
+                        </InfoBar>
                     </Grid>
                 </Border>
 
