@@ -13,6 +13,10 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
         Enumerable.Range(0, VoiceCapacity).Select(_ => new float[ScratchSamples]).ToArray();
     private readonly float[] _microphoneScratch = new float[ScratchSamples];
     private readonly BufferedMicrophoneSampleProvider? _microphone;
+    private readonly object _voiceMutationLock = new();
+    private readonly object _playbackStateLock = new();
+    private readonly HashSet<Guid> _playingPlaybackIds = [];
+    private float _soundGain = 1f;
     private long _sequence;
     private bool _disposed;
 
@@ -23,60 +27,71 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
 
     public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(48_000, 2);
 
-    public void AddOrReplace(Guid soundId, IAudioFileSource source, float volume)
+    // This is deliberately internal plumbing. Its sole subscriber queues work before
+    // notifying application code, so the audio callback never runs UI or user handlers.
+    public event Action<AudioPlaybackStateChanged>? PlaybackStateChanged;
+
+    public void SetSoundGain(float gain) =>
+        Volatile.Write(ref _soundGain, Math.Clamp(gain, 0f, 4f));
+
+    public void AddOrReplace(Guid playbackId, IAudioFileSource source, float volume)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        var provider = EnsureStereo48K(source);
-        var volumeProvider = new VolumeSampleProvider(provider)
+        lock (_voiceMutationLock)
         {
-            Volume = Math.Clamp(volume, 0f, 2f)
-        };
-        var replacement = new VoiceSlot(
-            soundId,
-            volumeProvider,
-            source,
-            Interlocked.Increment(ref _sequence));
-
-        for (var index = 0; index < VoiceCapacity; index++)
-        {
-            var existing = Volatile.Read(ref _voices[index]);
-            if (existing?.SoundId == soundId)
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var provider = EnsureStereo48K(source);
+            var volumeProvider = new VolumeSampleProvider(provider)
             {
-                Swap(index, replacement);
-                return;
-            }
-        }
+                Volume = Math.Clamp(volume, 0f, 2f)
+            };
+            var replacement = new VoiceSlot(
+                playbackId,
+                volumeProvider,
+                source,
+                Interlocked.Increment(ref _sequence),
+                Complete);
 
-        for (var index = 0; index < VoiceCapacity; index++)
-        {
-            var existing = Volatile.Read(ref _voices[index]);
-            if (existing is null || existing.IsCompleted)
+            for (var index = 0; index < VoiceCapacity; index++)
             {
-                Swap(index, replacement);
-                return;
+                var existing = Volatile.Read(ref _voices[index]);
+                if (existing?.PlaybackId == playbackId)
+                {
+                    Swap(index, replacement);
+                    return;
+                }
             }
-        }
 
-        var oldestIndex = 0;
-        var oldestSequence = long.MaxValue;
-        for (var index = 0; index < VoiceCapacity; index++)
-        {
-            var sequence = Volatile.Read(ref _voices[index])?.Sequence ?? long.MinValue;
-            if (sequence < oldestSequence)
+            for (var index = 0; index < VoiceCapacity; index++)
             {
-                oldestSequence = sequence;
-                oldestIndex = index;
+                var existing = Volatile.Read(ref _voices[index]);
+                if (existing is null || existing.IsCompleted)
+                {
+                    Swap(index, replacement);
+                    return;
+                }
             }
-        }
 
-        Swap(oldestIndex, replacement);
+            var oldestIndex = 0;
+            var oldestSequence = long.MaxValue;
+            for (var index = 0; index < VoiceCapacity; index++)
+            {
+                var sequence = Volatile.Read(ref _voices[index])?.Sequence ?? long.MinValue;
+                if (sequence < oldestSequence)
+                {
+                    oldestSequence = sequence;
+                    oldestIndex = index;
+                }
+            }
+
+            Swap(oldestIndex, replacement);
+        }
     }
 
-    public void Stop(Guid soundId)
+    public void Stop(Guid playbackId)
     {
         foreach (var voice in _voices)
         {
-            if (voice?.SoundId == soundId)
+            if (voice?.PlaybackId == playbackId)
             {
                 voice.RequestStop();
             }
@@ -96,15 +111,16 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
         Array.Clear(buffer, offset, count);
         if (_microphone is not null)
         {
-            MixProvider(_microphone, _microphoneScratch, buffer, offset, count);
+            MixProvider(_microphone, _microphoneScratch, buffer, offset, count, gain: 1f);
         }
 
+        var soundGain = Volatile.Read(ref _soundGain);
         for (var index = 0; index < VoiceCapacity; index++)
         {
             var voice = Volatile.Read(ref _voices[index]);
             if (voice is not null && !voice.IsCompleted)
             {
-                MixProvider(voice, _voiceScratch[index], buffer, offset, count);
+                MixProvider(voice, _voiceScratch[index], buffer, offset, count, soundGain);
             }
         }
 
@@ -113,15 +129,37 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        lock (_voiceMutationLock)
         {
-            return;
-        }
+            if (_disposed)
+            {
+                return;
+            }
 
-        _disposed = true;
-        for (var index = 0; index < VoiceCapacity; index++)
-        {
-            Interlocked.Exchange(ref _voices[index], null)?.Dispose();
+            _disposed = true;
+            var disposedVoices = new List<VoiceSlot>(VoiceCapacity);
+            lock (_playbackStateLock)
+            {
+                for (var index = 0; index < VoiceCapacity; index++)
+                {
+                    var voice = Interlocked.Exchange(ref _voices[index], null);
+                    if (voice is null)
+                    {
+                        continue;
+                    }
+
+                    disposedVoices.Add(voice);
+                    if (_playingPlaybackIds.Remove(voice.PlaybackId))
+                    {
+                        PlaybackStateChanged?.Invoke(new AudioPlaybackStateChanged(voice.PlaybackId, false));
+                    }
+                }
+            }
+
+            foreach (var voice in disposedVoices)
+            {
+                voice.Dispose();
+            }
         }
     }
 
@@ -149,7 +187,8 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
         float[] scratch,
         float[] destination,
         int destinationOffset,
-        int count)
+        int count,
+        float gain)
     {
         var processed = 0;
         while (processed < count)
@@ -158,7 +197,7 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
             var read = source.Read(scratch, 0, requested);
             for (var index = 0; index < read; index++)
             {
-                destination[destinationOffset + processed + index] += scratch[index];
+                destination[destinationOffset + processed + index] += scratch[index] * gain;
             }
 
             processed += requested;
@@ -171,8 +210,43 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
 
     private void Swap(int index, VoiceSlot replacement)
     {
-        var previous = Interlocked.Exchange(ref _voices[index], replacement);
+        VoiceSlot? previous;
+        lock (_playbackStateLock)
+        {
+            previous = Interlocked.Exchange(ref _voices[index], replacement);
+            if (previous is not null &&
+                previous.PlaybackId != replacement.PlaybackId &&
+                _playingPlaybackIds.Remove(previous.PlaybackId))
+            {
+                PlaybackStateChanged?.Invoke(new AudioPlaybackStateChanged(previous.PlaybackId, false));
+            }
+
+            if (_playingPlaybackIds.Add(replacement.PlaybackId))
+            {
+                PlaybackStateChanged?.Invoke(new AudioPlaybackStateChanged(replacement.PlaybackId, true));
+            }
+        }
+
         previous?.Dispose();
+    }
+
+    private void Complete(VoiceSlot voice)
+    {
+        lock (_playbackStateLock)
+        {
+            for (var index = 0; index < VoiceCapacity; index++)
+            {
+                if (ReferenceEquals(Volatile.Read(ref _voices[index]), voice))
+                {
+                    if (_playingPlaybackIds.Remove(voice.PlaybackId))
+                    {
+                        PlaybackStateChanged?.Invoke(new AudioPlaybackStateChanged(voice.PlaybackId, false));
+                    }
+
+                    return;
+                }
+            }
+        }
     }
 
     private sealed class VoiceSlot : ISampleProvider, IDisposable
@@ -180,6 +254,7 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
         private const int FadeSamples = 960;
         private readonly ISampleProvider _source;
         private readonly IDisposable _ownedSource;
+        private readonly Action<VoiceSlot> _onCompleted;
         private int _fadeRemaining = -1;
         private int _completed;
         private int _activeReaders;
@@ -190,15 +265,17 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
             Guid soundId,
             ISampleProvider source,
             IDisposable ownedSource,
-            long sequence)
+            long sequence,
+            Action<VoiceSlot> onCompleted)
         {
-            SoundId = soundId;
+            PlaybackId = soundId;
             _source = source;
             _ownedSource = ownedSource;
             Sequence = sequence;
+            _onCompleted = onCompleted;
         }
 
-        public Guid SoundId { get; }
+        public Guid PlaybackId { get; }
 
         public long Sequence { get; }
 
@@ -224,7 +301,7 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
                 var read = _source.Read(buffer, offset, count);
                 if (read == 0)
                 {
-                    Volatile.Write(ref _completed, 1);
+                    Complete();
                     return 0;
                 }
 
@@ -245,7 +322,7 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
                                 buffer,
                                 offset + index + 1,
                                 read - index - 1);
-                            Volatile.Write(ref _completed, 1);
+                            Complete();
                             break;
                         }
                     }
@@ -270,11 +347,19 @@ internal sealed class FixedVoiceMixer : ISampleProvider, IDisposable
 
         public void Dispose()
         {
-            Volatile.Write(ref _completed, 1);
+            Complete();
             Volatile.Write(ref _disposeRequested, 1);
             if (Volatile.Read(ref _activeReaders) == 0)
             {
                 DisposeSource();
+            }
+        }
+
+        private void Complete()
+        {
+            if (Interlocked.Exchange(ref _completed, 1) == 0)
+            {
+                _onCompleted(this);
             }
         }
 

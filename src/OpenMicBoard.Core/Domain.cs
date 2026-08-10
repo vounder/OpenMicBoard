@@ -24,7 +24,8 @@ public sealed record SoundPad(
     int SchemaVersion = 1,
     float Volume = 1f,
     string ColorToken = "Mint",
-    int Order = 0) : ISchemaVersioned;
+    int Order = 0,
+    string IconToken = "Audio") : ISchemaVersioned;
 
 /// <summary>A named collection of pads.</summary>
 public sealed record Profile(Guid Id, string Name, IReadOnlyList<SoundPad> Pads, int SchemaVersion = 1) : ISchemaVersioned;
@@ -44,7 +45,11 @@ public sealed record AppSettings(
     bool Autostart = false,
     bool OnboardingCompleted = false,
     float MicrophoneGain = 1f,
-    float SoundGain = 1f) : ISchemaVersioned;
+    float SoundGain = 1f,
+    bool VoiceProcessingEnabled = true,
+    bool NoiseGateEnabled = true,
+    float NoiseGateThresholdDb = -50f,
+    bool MicrophoneMuted = false) : ISchemaVersioned;
 
 /// <summary>The complete local library; managed sound bytes live beside this index.</summary>
 public sealed record LibraryState(

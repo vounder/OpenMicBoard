@@ -33,13 +33,26 @@ public sealed class AudioDeviceCatalog : IAudioDeviceCatalog, IMMNotificationCli
                     device.FriendlyName,
                     kind,
                     format.Channels,
-                    format.SampleRate));
+                    format.SampleRate,
+                    device.DeviceFriendlyName));
             }
         }
 
         return endpoints
             .OrderBy(endpoint => endpoint.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
+    }
+
+    public bool GetCaptureMute(string endpointId)
+    {
+        using var device = GetActiveCaptureDevice(endpointId);
+        return device.AudioEndpointVolume.Mute;
+    }
+
+    public void SetCaptureMute(string endpointId, bool muted)
+    {
+        using var device = GetActiveCaptureDevice(endpointId);
+        device.AudioEndpointVolume.Mute = muted;
     }
 
     public void OnDeviceStateChanged(string deviceId, DeviceState newState) => NotifyChanged();
@@ -66,4 +79,19 @@ public sealed class AudioDeviceCatalog : IAudioDeviceCatalog, IMMNotificationCli
     }
 
     private void NotifyChanged() => DevicesChanged?.Invoke(this, EventArgs.Empty);
+
+    private MMDevice GetActiveCaptureDevice(string endpointId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpointId);
+        var device = _enumerator.GetDevice(endpointId);
+        if (device.DataFlow == DataFlow.Capture &&
+            (device.State & DeviceState.Active) != 0)
+        {
+            return device;
+        }
+
+        device.Dispose();
+        throw new InvalidOperationException("The selected microphone is not available.");
+    }
 }

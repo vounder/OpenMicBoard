@@ -5,6 +5,7 @@ namespace OpenMicBoard.Audio.Windows;
 internal sealed class LookaheadLimiterSampleProvider : ISampleProvider
 {
     private const float Ceiling = 0.8912509f; // -1 dBFS
+    private const float ReleaseCoefficient = 0.0005f;
     private readonly ISampleProvider _source;
     private readonly float[] _sourceScratch = new float[16_384];
     private readonly float[] _delay;
@@ -46,7 +47,7 @@ internal sealed class LookaheadLimiterSampleProvider : ISampleProvider
                 var targetGain = peak > Ceiling ? Ceiling / peak : 1f;
                 _gain = targetGain < _gain
                     ? targetGain
-                    : Math.Min(1f, _gain + 0.00005f);
+                    : Math.Min(1f, _gain + ((1f - _gain) * ReleaseCoefficient));
 
                 var delayedLeft = _delay[_delayIndex];
                 var delayedRight = _delay[_delayIndex + 1];

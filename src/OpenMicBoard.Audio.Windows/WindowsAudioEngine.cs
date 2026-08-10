@@ -1,6 +1,7 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using System.Collections.Concurrent;
 
 namespace OpenMicBoard.Audio.Windows;
 
@@ -14,9 +15,12 @@ public sealed class WindowsAudioEngine : IAudioEngine
     private MMDevice? _captureDevice;
     private MMDevice? _renderDevice;
     private FixedVoiceMixer? _mixer;
+    private BufferedMicrophoneSampleProvider? _microphoneProvider;
     private AdaptiveStereoBuffer? _microphoneBuffer;
     private MicrophonePcmConverter? _microphoneConverter;
     private AudioEngineOptions? _options;
+    private readonly ConcurrentQueue<AudioPlaybackStateChanged> _playbackStateChanges = new();
+    private int _playbackStateDispatchScheduled;
     private bool _stopping;
     private bool _disposed;
 
@@ -30,6 +34,8 @@ public sealed class WindowsAudioEngine : IAudioEngine
         new(AudioEngineState.Stopped);
 
     public event EventHandler<AudioEngineStatus>? StatusChanged;
+
+    public event EventHandler<AudioPlaybackStateChanged>? PlaybackStateChanged;
 
     public async Task StartAsync(
         AudioEngineOptions options,
@@ -71,7 +77,7 @@ public sealed class WindowsAudioEngine : IAudioEngine
     }
 
     public async Task PlayAsync(
-        Guid soundId,
+        Guid playbackId,
         string filePath,
         float volume = 1f,
         CancellationToken cancellationToken = default)
@@ -87,9 +93,9 @@ public sealed class WindowsAudioEngine : IAudioEngine
         try
         {
             _mixer.AddOrReplace(
-                soundId,
+                playbackId,
                 source,
-                Math.Clamp(volume * (_options?.SoundGain ?? 1f), 0f, 2f));
+                Math.Clamp(volume, 0f, 2f));
         }
         catch
         {
@@ -106,8 +112,9 @@ public sealed class WindowsAudioEngine : IAudioEngine
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         using var previewDevice = GetActiveDevice(previewEndpointId, DataFlow.Render);
-        using var source = await Task.Run(() => AudioFileSource.Open(filePath), cancellationToken)
-            .ConfigureAwait(false);
+        using var source = await Task.Run(
+            () => AudioFileSource.Open(filePath),
+            cancellationToken);
 
         ISampleProvider provider = source;
         if (provider.WaveFormat.SampleRate != 48_000)
@@ -155,9 +162,43 @@ public sealed class WindowsAudioEngine : IAudioEngine
         await completion.Task.ConfigureAwait(false);
     }
 
-    public void StopSound(Guid soundId) => _mixer?.Stop(soundId);
+    public void StopSound(Guid playbackId) => _mixer?.Stop(playbackId);
 
     public void StopAllSounds() => _mixer?.StopAll();
+
+    public void UpdateMixSettings(
+        float microphoneGain,
+        float soundGain,
+        bool voiceProcessingEnabled,
+        bool noiseGateEnabled,
+        float noiseGateThresholdDb,
+        bool microphoneMuted)
+    {
+        microphoneGain = Math.Clamp(microphoneGain, 0f, 4f);
+        soundGain = Math.Clamp(soundGain, 0f, 4f);
+        noiseGateThresholdDb = Math.Clamp(noiseGateThresholdDb, -70f, -25f);
+        var options = _options;
+        if (options is not null)
+        {
+            _options = options with
+            {
+                MicrophoneGain = microphoneGain,
+                SoundGain = soundGain,
+                VoiceProcessingEnabled = voiceProcessingEnabled,
+                NoiseGateEnabled = noiseGateEnabled,
+                NoiseGateThresholdDb = noiseGateThresholdDb,
+                MicrophoneMuted = microphoneMuted
+            };
+        }
+
+        _microphoneProvider?.Configure(
+            microphoneGain,
+            voiceProcessingEnabled,
+            noiseGateEnabled,
+            noiseGateThresholdDb,
+            microphoneMuted);
+        _mixer?.SetSoundGain(soundGain);
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -202,7 +243,12 @@ public sealed class WindowsAudioEngine : IAudioEngine
                 targetFrames: 4_800);
             microphoneProvider = new BufferedMicrophoneSampleProvider(
                 _microphoneBuffer,
-                Math.Clamp(options.MicrophoneGain, 0f, 2f));
+                Math.Clamp(options.MicrophoneGain, 0f, 4f),
+                options.VoiceProcessingEnabled,
+                options.NoiseGateEnabled,
+                options.NoiseGateThresholdDb,
+                options.MicrophoneMuted);
+            _microphoneProvider = microphoneProvider;
             _microphoneConverter = new MicrophonePcmConverter(
                 _captureDevice.AudioClient.MixFormat,
                 _microphoneBuffer);
@@ -212,6 +258,8 @@ public sealed class WindowsAudioEngine : IAudioEngine
         }
 
         _mixer = new FixedVoiceMixer(microphoneProvider);
+        _mixer.SetSoundGain(options.SoundGain);
+        _mixer.PlaybackStateChanged += OnMixerPlaybackStateChanged;
         var limiter = new LookaheadLimiterSampleProvider(_mixer);
         _render = new WasapiOut(
             _renderDevice,
@@ -249,7 +297,11 @@ public sealed class WindowsAudioEngine : IAudioEngine
                 _render.Dispose();
             }
 
-            _mixer?.Dispose();
+            if (_mixer is not null)
+            {
+                _mixer.Dispose();
+                _mixer.PlaybackStateChanged -= OnMixerPlaybackStateChanged;
+            }
             _captureDevice?.Dispose();
             _renderDevice?.Dispose();
             _capture = null;
@@ -258,6 +310,7 @@ public sealed class WindowsAudioEngine : IAudioEngine
             _renderDevice = null;
             _mixer = null;
             _microphoneBuffer = null;
+            _microphoneProvider = null;
             _microphoneConverter = null;
         }
         finally
@@ -398,5 +451,56 @@ public sealed class WindowsAudioEngine : IAudioEngine
     {
         Status = new AudioEngineStatus(state, message, exception);
         StatusChanged?.Invoke(this, Status);
+    }
+
+    private void OnMixerPlaybackStateChanged(AudioPlaybackStateChanged change)
+    {
+        _playbackStateChanges.Enqueue(change);
+        if (Interlocked.Exchange(ref _playbackStateDispatchScheduled, 1) == 0)
+        {
+            ThreadPool.UnsafeQueueUserWorkItem(
+                static (WindowsAudioEngine engine) => engine.DispatchPlaybackStateChanges(),
+                this,
+                preferLocal: false);
+        }
+    }
+
+    private void DispatchPlaybackStateChanges()
+    {
+        try
+        {
+            while (_playbackStateChanges.TryDequeue(out var change))
+            {
+                var handlers = PlaybackStateChanged;
+                if (handlers is null)
+                {
+                    continue;
+                }
+
+                foreach (EventHandler<AudioPlaybackStateChanged> handler in handlers.GetInvocationList())
+                {
+                    try
+                    {
+                        handler(this, change);
+                    }
+                    catch
+                    {
+                        // An observer must never take down the audio pipeline.
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _playbackStateDispatchScheduled, 0);
+            if (!_playbackStateChanges.IsEmpty &&
+                Interlocked.Exchange(ref _playbackStateDispatchScheduled, 1) == 0)
+            {
+                ThreadPool.UnsafeQueueUserWorkItem(
+                    static (WindowsAudioEngine engine) => engine.DispatchPlaybackStateChanges(),
+                    this,
+                    preferLocal: false);
+            }
+        }
     }
 }

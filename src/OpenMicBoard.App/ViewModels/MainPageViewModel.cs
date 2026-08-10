@@ -6,6 +6,8 @@ using OpenMicBoard.App.Services;
 using OpenMicBoard.Audio.Windows;
 using OpenMicBoard.Core;
 using OpenMicBoard.Infrastructure;
+using Microsoft.UI.Xaml.Media;
+using Windows.UI;
 
 namespace OpenMicBoard.App.ViewModels;
 
@@ -22,7 +24,8 @@ public sealed partial class SoundPadViewModel : ObservableObject
         bool isMissing,
         Func<SoundPadViewModel, Task> play,
         Func<SoundPadViewModel, Task> preview,
-        Action<SoundPadViewModel> stop)
+        Action<SoundPadViewModel> stop,
+        bool isPlaying)
     {
         Pad = pad;
         Asset = asset;
@@ -33,7 +36,8 @@ public sealed partial class SoundPadViewModel : ObservableObject
         _stop = stop;
         PlayCommand = new AsyncRelayCommand(() => _play(this));
         PreviewCommand = new AsyncRelayCommand(() => _preview(this));
-        StopCommand = new RelayCommand(() => _stop(this));
+        StopCommand = new RelayCommand(() => _stop(this), () => IsPlaying);
+        IsPlaying = isPlaying;
     }
 
     public SoundPad Pad { get; }
@@ -46,18 +50,27 @@ public sealed partial class SoundPadViewModel : ObservableObject
 
     public string Name => Pad.Name;
 
-    public string Subtitle =>
-        IsMissing
-            ? "Linked file unavailable"
-            : Pad.Hotkey ?? (Asset.Kind == SoundAssetKind.Managed ? "Managed copy" : "Linked file");
+    public string Subtitle => IsMissing ? "Linked file unavailable" :
+        (Asset.Kind == SoundAssetKind.Managed ? "Managed copy" : "Linked file");
 
-    public string Glyph => IsMissing ? "\uE783" : "\uE8D6";
+    public string ShortcutLabel => string.IsNullOrWhiteSpace(Pad.Hotkey) ? "Set shortcut" : Pad.Hotkey;
+
+    public string Glyph => IsMissing ? "\uE783" : SoundPadIconCatalog.Resolve(Pad.IconToken).Glyph;
+
+    public Brush AccentBrush => new SolidColorBrush(ParseColor(Pad.ColorToken));
+    public Brush IconForeground => new SolidColorBrush(MainPageViewModel.GetContrastingTextColor(ParseColor(Pad.ColorToken)));
+
+    [ObservableProperty] public partial bool IsPlaying { get; set; }
 
     public IAsyncRelayCommand PlayCommand { get; }
 
     public IAsyncRelayCommand PreviewCommand { get; }
 
     public IRelayCommand StopCommand { get; }
+
+    partial void OnIsPlayingChanged(bool value) => StopCommand.NotifyCanExecuteChanged();
+
+    private static Color ParseColor(string? value) => MainPageViewModel.ParsePadColor(value);
 }
 
 public sealed record ProfileOption(Guid Id, string Name);
@@ -78,6 +91,9 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
     private LibraryState _library = LibraryState.Empty;
     private bool _initialized;
     private int _deviceRefreshDepth;
+    private readonly HashSet<Guid> _playingPadIds = [];
+    private readonly object _previewPlaybackLock = new();
+    private readonly Dictionary<Guid, CancellationTokenSource> _previewPlaybackCancellations = [];
 
     public MainPageViewModel()
     {
@@ -96,6 +112,8 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             App.DispatcherQueue.TryEnqueue(RefreshDevices);
         _audioEngine.StatusChanged += (_, status) =>
             App.DispatcherQueue.TryEnqueue(() => ApplyStatus(status));
+        _audioEngine.PlaybackStateChanged += (_, state) =>
+            App.DispatcherQueue.TryEnqueue(() => ApplyPlaybackState(state));
     }
 
     public ObservableCollection<AudioEndpointInfo> RenderEndpoints { get; } = [];
@@ -153,6 +171,41 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
     [ObservableProperty]
     public partial string ActiveProfileTitle { get; set; } = "Default";
 
+    [ObservableProperty]
+    public partial double MicrophoneBoostDb { get; set; }
+
+    [ObservableProperty]
+    public partial double SoundBoostDb { get; set; }
+
+    [ObservableProperty]
+    public partial bool VoiceProcessingEnabled { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool NoiseGateEnabled { get; set; } = true;
+
+    [ObservableProperty]
+    public partial double NoiseGateThresholdDb { get; set; } = -50;
+
+    [ObservableProperty]
+    public partial bool IsMicrophoneMuted { get; set; }
+
+    public string MicrophoneBoostLabel => FormatDecibels(MicrophoneBoostDb);
+
+    public string SoundBoostLabel => FormatDecibels(SoundBoostDb);
+
+    public string NoiseGateThresholdLabel => $"{NoiseGateThresholdDb:0} dB";
+
+    public string MicrophoneMuteLabel =>
+        IsMicrophoneMuted ? "Unmute mic" : "Mute mic";
+
+    public string MicrophoneMuteGlyph =>
+        IsMicrophoneMuted ? "\uE74F" : "\uE720";
+
+    public string MicrophoneMuteToolTip =>
+        IsMicrophoneMuted
+            ? "Unmute the selected Windows microphone for OpenMicBoard and other apps"
+            : "Mute the selected Windows microphone for OpenMicBoard and other apps";
+
     public bool RequiresOnboarding => !_settings.OnboardingCompleted;
 
     public async Task InitializeAsync()
@@ -171,6 +224,12 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             CheckForUpdates = _settings.CheckForUpdates;
             Autostart = _settings.Autostart;
             SelectedBufferProfile = _settings.BufferProfile;
+            MicrophoneBoostDb = LinearToDb(_settings.MicrophoneGain);
+            SoundBoostDb = LinearToDb(_settings.SoundGain);
+            VoiceProcessingEnabled = _settings.VoiceProcessingEnabled;
+            NoiseGateEnabled = _settings.NoiseGateEnabled;
+            NoiseGateThresholdDb = _settings.NoiseGateThresholdDb;
+            IsMicrophoneMuted = _settings.MicrophoneMuted;
             RefreshDevices();
             RebuildProfiles();
             RestoreSelections();
@@ -239,15 +298,31 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
     {
         if (IsAudioRunning)
         {
+            CancelAllPreviewPlayback();
             await _audioEngine.StopAsync();
             return;
         }
 
+        await StartAudioRouteAsync();
+    }
+
+    private async Task<bool> StartAudioRouteAsync()
+    {
         if (SelectedRenderEndpoint is null)
         {
             StatusMessage = "Select the virtual output that feeds your communication app.";
             StatusGlyph = "\uEA39";
-            return;
+            return false;
+        }
+
+        if (BelongsToSameDevice(SelectedPreviewEndpoint, SelectedRenderEndpoint) ||
+            BelongsToSameDevice(SelectedCaptureEndpoint, SelectedRenderEndpoint))
+        {
+            StatusMessage =
+                $"“{SelectedRenderEndpoint.DisplayName}” belongs to the same physical device as your " +
+                "microphone or private preview. Install and select a virtual audio cable instead.";
+            StatusGlyph = "\uEA39";
+            return false;
         }
 
         IsBusy = true;
@@ -260,12 +335,18 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
                     SelectedCaptureEndpoint?.Id,
                     ParseBufferProfile(_settings.BufferProfile),
                     _settings.MicrophoneGain,
-                    _settings.SoundGain));
+                    _settings.SoundGain,
+                    _settings.VoiceProcessingEnabled,
+                    _settings.NoiseGateEnabled,
+                    _settings.NoiseGateThresholdDb,
+                    _settings.MicrophoneMuted));
+            return true;
         }
         catch (Exception exception)
         {
             StatusMessage = $"Audio start failed: {exception.Message}";
             StatusGlyph = "\uEA39";
+            return false;
         }
         finally
         {
@@ -274,7 +355,10 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
     }
 
     [RelayCommand]
-    private void StopAll() => _audioEngine.StopAllSounds();
+    private void StopAll()
+    {
+        StopAllPlayback();
+    }
 
     [RelayCommand]
     private void RefreshDevices()
@@ -309,21 +393,147 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
         }
     }
 
-    [RelayCommand]
-    private async Task AddProfileAsync()
+    public string SuggestedProfileName
     {
+        get
+        {
+            for (var index = 1; ; index++)
+            {
+                var candidate = $"Profile {index}";
+                if (!_library.Profiles.Any(x => string.Equals(x.Name, candidate, StringComparison.OrdinalIgnoreCase))) return candidate;
+            }
+        }
+    }
+
+    public async Task<string?> AddProfileAsync(string? name)
+    {
+        name = name?.Trim();
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 80) return "Profile names must be 1–80 characters.";
+        if (_library.Profiles.Any(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase))) return "A profile with that name already exists.";
         var profile = new Profile(
             Guid.NewGuid(),
-            $"Profile {_library.Profiles.Count + 1}",
+            name,
             []);
-        _library = _library with
+        var candidateLibrary = _library with
         {
             Profiles = [.. _library.Profiles, profile],
             ActiveProfileId = profile.Id
         };
-        await _libraryStore.SaveAsync(_library);
+        try
+        {
+            await _libraryStore.SaveAsync(candidateLibrary);
+        }
+        catch (Exception exception)
+        {
+            return $"Profile could not be saved: {exception.Message}";
+        }
+
+        _library = candidateLibrary;
+        StopAllPlayback();
+        _playingPadIds.Clear();
         RebuildProfiles();
-        SelectedProfile = Profiles.First(item => item.Id == profile.Id);
+        RebuildPads();
+        RebuildHotkeys();
+        return null;
+    }
+
+    public async Task<string?> EditPadAsync(Guid padId, string? name, string? iconToken, string? colorToken)
+    {
+        name = name?.Trim();
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 80) return "Pad names must be 1–80 characters.";
+        var profile = GetActiveProfile();
+        var pad = profile.Pads.FirstOrDefault(x => x.Id == padId);
+        if (pad is null) return "The sound pad is no longer in this profile.";
+        var updated = pad with { Name = name, IconToken = SoundPadIconCatalog.Resolve(iconToken).Token, ColorToken = NormalizePadColor(colorToken) };
+        var updatedProfile = profile with { Pads = profile.Pads.Select(x => x.Id == padId ? updated : x).ToArray() };
+        var candidateLibrary = _library with
+        {
+            Profiles = _library.Profiles
+                .Select(x => x.Id == profile.Id ? updatedProfile : x)
+                .ToArray()
+        };
+        try
+        {
+            await _libraryStore.SaveAsync(candidateLibrary);
+        }
+        catch (Exception exception)
+        {
+            return $"Sound pad could not be saved: {exception.Message}";
+        }
+
+        _library = candidateLibrary;
+        RebuildPads();
+        return null;
+    }
+
+    public async Task<string?> RemovePadAsync(Guid padId)
+    {
+        var profile = GetActiveProfile();
+        var pad = profile.Pads.FirstOrDefault(item => item.Id == padId);
+        if (pad is null)
+        {
+            return "The sound pad is no longer in this profile.";
+        }
+
+        var remainingPads = profile.Pads
+            .Where(item => item.Id != padId)
+            .Select((item, index) => item with { Order = index })
+            .ToArray();
+        var updatedProfile = profile with { Pads = remainingPads };
+        var candidateLibrary = _library with
+        {
+            Profiles = _library.Profiles
+                .Select(item => item.Id == profile.Id ? updatedProfile : item)
+                .ToArray()
+        };
+
+        try
+        {
+            await _libraryStore.SaveAsync(candidateLibrary);
+        }
+        catch (Exception exception)
+        {
+            return $"Sound pad could not be removed: {exception.Message}";
+        }
+
+        StopPadPlayback(padId);
+        _playingPadIds.Remove(padId);
+        _library = candidateLibrary;
+
+        var asset = pad.SoundAssetId is Guid assetId
+            ? _library.Assets.FirstOrDefault(item => item.Id == assetId)
+            : null;
+        var assetStillUsed = asset is not null &&
+            _library.Profiles
+                .SelectMany(item => item.Pads)
+                .Any(item => item.SoundAssetId == asset.Id);
+        var cleanupWarning = string.Empty;
+        if (asset is not null && !assetStillUsed)
+        {
+            try
+            {
+                _soundLibrary.DeleteManaged(asset);
+                var compactedLibrary = _library with
+                {
+                    Assets = _library.Assets
+                        .Where(item => item.Id != asset.Id)
+                        .ToArray()
+                };
+                await _libraryStore.SaveAsync(compactedLibrary);
+                _library = compactedLibrary;
+            }
+            catch (Exception exception)
+            {
+                cleanupWarning =
+                    $" The unused private copy could not be deleted: {exception.Message}";
+            }
+        }
+
+        RebuildPads();
+        RebuildHotkeys();
+        StatusMessage = $"Removed {pad.Name} from {profile.Name}.{cleanupWarning}";
+        StatusGlyph = string.IsNullOrEmpty(cleanupWarning) ? "\uE74D" : "\uEA39";
+        return null;
     }
 
     [RelayCommand]
@@ -399,6 +609,7 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
     {
         if (_deviceRefreshDepth == 0)
         {
+            SynchronizeMicrophoneMuteState();
             await SaveSettingsAsync();
         }
     }
@@ -413,10 +624,14 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
     public async Task<string?> SetHotkeyAsync(Guid padId, string? chord)
     {
         chord = string.IsNullOrWhiteSpace(chord) ? null : chord.Trim();
-        if (chord is not null &&
-            !GlobalHotkeyService.TryParseChord(chord, out _, out _, out var parseError))
+        if (chord is not null)
         {
-            return parseError;
+            if (!HotkeyChordParser.TryParse(chord, out var parsed, out var parseError))
+            {
+                return parseError;
+            }
+
+            chord = parsed.CanonicalChord;
         }
 
         var profile = GetActiveProfile();
@@ -500,6 +715,71 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
         StatusGlyph = "\uE73E";
     }
 
+    [RelayCommand]
+    private async Task ApplyMixSettingsAsync()
+    {
+        var microphoneGain = DbToLinear((float)Math.Clamp(MicrophoneBoostDb, -12, 12));
+        var soundGain = DbToLinear((float)Math.Clamp(SoundBoostDb, -12, 12));
+        var gateThreshold = (float)Math.Clamp(NoiseGateThresholdDb, -70, -25);
+        _settings = _settings with
+        {
+            MicrophoneGain = microphoneGain,
+            SoundGain = soundGain,
+            VoiceProcessingEnabled = VoiceProcessingEnabled,
+            NoiseGateEnabled = NoiseGateEnabled,
+            NoiseGateThresholdDb = gateThreshold,
+            MicrophoneMuted = IsMicrophoneMuted
+        };
+        _audioEngine.UpdateMixSettings(
+            microphoneGain,
+            soundGain,
+            VoiceProcessingEnabled,
+            NoiseGateEnabled,
+            gateThreshold,
+            IsMicrophoneMuted);
+        await _settingsStore.SaveAsync(_settings);
+        StatusMessage = IsAudioRunning
+            ? "Mix processing applied live."
+            : "Mix processing saved for the next route start.";
+        StatusGlyph = "\uE73E";
+    }
+
+    [RelayCommand]
+    private async Task ToggleMicrophoneMuteAsync()
+    {
+        if (SelectedCaptureEndpoint is null)
+        {
+            StatusMessage = "Choose the microphone you want to mute first.";
+            StatusGlyph = "\uEA39";
+            return;
+        }
+
+        try
+        {
+            var muted = !_deviceCatalog.GetCaptureMute(SelectedCaptureEndpoint.Id);
+            _deviceCatalog.SetCaptureMute(SelectedCaptureEndpoint.Id, muted);
+            IsMicrophoneMuted = muted;
+            _settings = _settings with { MicrophoneMuted = muted };
+            _audioEngine.UpdateMixSettings(
+                DbToLinear((float)Math.Clamp(MicrophoneBoostDb, -12, 12)),
+                DbToLinear((float)Math.Clamp(SoundBoostDb, -12, 12)),
+                VoiceProcessingEnabled,
+                NoiseGateEnabled,
+                (float)Math.Clamp(NoiseGateThresholdDb, -70, -25),
+                muted);
+            await _settingsStore.SaveAsync(_settings);
+            StatusMessage = muted
+                ? "Windows microphone muted. Soundboard playback remains active."
+                : "Windows microphone unmuted.";
+            StatusGlyph = muted ? "\uE74F" : "\uE720";
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Microphone mute failed: {exception.Message}";
+            StatusGlyph = "\uEA39";
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_hotkeys is not null)
@@ -507,7 +787,8 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             _hotkeys.Pressed -= OnHotkeyPressed;
             _hotkeys.Dispose();
         }
-
+        StopAllPlayback();
+        _playingPadIds.Clear();
         await _audioEngine.DisposeAsync();
         _deviceCatalog.Dispose();
         _updateTransport.Dispose();
@@ -520,7 +801,8 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             return;
         }
 
-        _audioEngine.StopAllSounds();
+        StopAllPlayback();
+        _playingPadIds.Clear();
         _library = _library with { ActiveProfileId = value.Id };
         ActiveProfileTitle = value.Name;
         RebuildPads();
@@ -537,10 +819,21 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             return;
         }
 
+        var isMonitored = StartPrivateMonitor(pad);
         try
         {
+            if (!IsAudioRunning && !await StartAudioRouteAsync())
+            {
+                if (isMonitored)
+                {
+                    StatusMessage += " The clip is playing on private preview only.";
+                }
+
+                return;
+            }
+
             await _audioEngine.PlayAsync(
-                pad.Asset.Id,
+                pad.Pad.Id,
                 pad.ResolvedFilePath,
                 pad.Pad.Volume);
             StatusMessage = $"Playing {pad.Name}";
@@ -550,6 +843,45 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
         {
             StatusMessage = exception.Message;
             StatusGlyph = "\uEA39";
+        }
+    }
+
+    public Task PlayPadAsync(SoundPadViewModel pad) => PlayAsync(pad);
+
+    private bool StartPrivateMonitor(SoundPadViewModel pad)
+    {
+        if (SelectedPreviewEndpoint is null ||
+            SelectedPreviewEndpoint.Id == SelectedRenderEndpoint?.Id)
+        {
+            return false;
+        }
+
+        _ = MonitorSoundAsync(pad);
+        return true;
+    }
+
+    private async Task MonitorSoundAsync(SoundPadViewModel pad)
+    {
+        using var cancellation = BeginPreviewPlayback(pad.Pad.Id);
+        try
+        {
+            await _audioEngine.PreviewAsync(
+                pad.ResolvedFilePath,
+                SelectedPreviewEndpoint!.Id,
+                pad.Pad.Volume,
+                cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"Private preview failed: {exception.Message}";
+            StatusGlyph = "\uEA39";
+        }
+        finally
+        {
+            CompletePreviewPlayback(pad.Pad.Id, cancellation);
         }
     }
 
@@ -595,19 +927,30 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             return;
         }
 
+        using var cancellation = BeginPreviewPlayback(pad.Pad.Id);
         try
         {
             await _audioEngine.PreviewAsync(
                 pad.ResolvedFilePath,
                 SelectedPreviewEndpoint.Id,
-                pad.Pad.Volume);
+                pad.Pad.Volume,
+                cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
         }
         catch (Exception exception)
         {
             StatusMessage = $"Preview failed: {exception.Message}";
             StatusGlyph = "\uEA39";
         }
+        finally
+        {
+            CompletePreviewPlayback(pad.Pad.Id, cancellation);
+        }
     }
+
+    public Task PreviewPadAsync(SoundPadViewModel pad) => PreviewAsync(pad);
 
     private void ApplyStatus(AudioEngineStatus status)
     {
@@ -628,6 +971,18 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             AudioEngineState.Stopped => "\uE72E",
             _ => "\uEA39"
         };
+        if (status.State != AudioEngineState.Running)
+        {
+            _playingPadIds.Clear();
+            foreach (var pad in Pads) pad.IsPlaying = false;
+        }
+    }
+
+    private void ApplyPlaybackState(AudioPlaybackStateChanged state)
+    {
+        if (state.IsPlaying) _playingPadIds.Add(state.PlaybackId); else _playingPadIds.Remove(state.PlaybackId);
+        var pad = Pads.FirstOrDefault(x => x.Pad.Id == state.PlaybackId);
+        if (pad is not null) pad.IsPlaying = state.IsPlaying;
     }
 
     private void RestoreSelections()
@@ -638,6 +993,7 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             CaptureEndpoints.FirstOrDefault(item => item.Id == _settings.CaptureEndpointId);
         SelectedPreviewEndpoint =
             PreviewEndpoints.FirstOrDefault(item => item.Id == _settings.PreviewEndpointId);
+        SynchronizeMicrophoneMuteState();
     }
 
     private void RebuildProfiles()
@@ -674,11 +1030,99 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
                     _soundLibrary.IsMissing(asset),
                     PlayAsync,
                     PreviewAsync,
-                    item => _audioEngine.StopSound(item.Asset.Id)));
+                    item => StopPadPlayback(item.Pad.Id),
+                    _playingPadIds.Contains(pad.Id)));
         }
 
         HasSounds = Pads.Count > 0;
         IsEmpty = !HasSounds;
+    }
+
+    private void StopPadPlayback(Guid padId)
+    {
+        _audioEngine.StopSound(padId);
+        CancelPreviewPlayback(padId);
+    }
+
+    private void StopAllPlayback()
+    {
+        _audioEngine.StopAllSounds();
+        CancelAllPreviewPlayback();
+    }
+
+    private CancellationTokenSource BeginPreviewPlayback(Guid padId)
+    {
+        var cancellation = new CancellationTokenSource();
+        CancellationTokenSource? previous;
+        lock (_previewPlaybackLock)
+        {
+            _previewPlaybackCancellations.TryGetValue(padId, out previous);
+            _previewPlaybackCancellations[padId] = cancellation;
+        }
+
+        CancelAndDispose(previous);
+        return cancellation;
+    }
+
+    private void CompletePreviewPlayback(Guid padId, CancellationTokenSource cancellation)
+    {
+        lock (_previewPlaybackLock)
+        {
+            if (_previewPlaybackCancellations.TryGetValue(padId, out var current) &&
+                ReferenceEquals(current, cancellation))
+            {
+                _previewPlaybackCancellations.Remove(padId);
+            }
+        }
+    }
+
+    private void CancelPreviewPlayback(Guid padId)
+    {
+        CancellationTokenSource? cancellation;
+        lock (_previewPlaybackLock)
+        {
+            if (!_previewPlaybackCancellations.Remove(padId, out cancellation))
+            {
+                return;
+            }
+        }
+
+        CancelAndDispose(cancellation);
+    }
+
+    private void CancelAllPreviewPlayback()
+    {
+        CancellationTokenSource[] cancellations;
+        lock (_previewPlaybackLock)
+        {
+            cancellations = [.. _previewPlaybackCancellations.Values];
+            _previewPlaybackCancellations.Clear();
+        }
+
+        foreach (var cancellation in cancellations)
+        {
+            CancelAndDispose(cancellation);
+        }
+    }
+
+    private static void CancelAndDispose(CancellationTokenSource? cancellation)
+    {
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            cancellation.Dispose();
+        }
     }
 
     private Profile GetActiveProfile()
@@ -695,7 +1139,13 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
             CaptureEndpointId = SelectedCaptureEndpoint?.Id,
             PreviewEndpointId = SelectedPreviewEndpoint?.Id,
             BufferProfile = SelectedBufferProfile,
-            CheckForUpdates = CheckForUpdates
+            CheckForUpdates = CheckForUpdates,
+            MicrophoneGain = DbToLinear((float)Math.Clamp(MicrophoneBoostDb, -12, 12)),
+            SoundGain = DbToLinear((float)Math.Clamp(SoundBoostDb, -12, 12)),
+            VoiceProcessingEnabled = VoiceProcessingEnabled,
+            NoiseGateEnabled = NoiseGateEnabled,
+            NoiseGateThresholdDb = (float)Math.Clamp(NoiseGateThresholdDb, -70, -25),
+            MicrophoneMuted = IsMicrophoneMuted
         };
         await _settingsStore.SaveAsync(_settings);
     }
@@ -704,6 +1154,94 @@ public sealed partial class MainPageViewModel : ObservableObject, IAsyncDisposab
         Enum.TryParse<AudioBufferProfile>(value, true, out var profile)
             ? profile
             : AudioBufferProfile.Balanced;
+
+    public static string NormalizePadColor(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || string.Equals(value, "Mint", StringComparison.OrdinalIgnoreCase)) return "#9FE7D7";
+        var text = value.Trim();
+        return text.Length == 7 && text[0] == '#' && uint.TryParse(text[1..], System.Globalization.NumberStyles.HexNumber, null, out _) ? text.ToUpperInvariant() : "#9FE7D7";
+    }
+
+    public static Color ParsePadColor(string? value)
+    {
+        var text = NormalizePadColor(value);
+        return Color.FromArgb(255, Convert.ToByte(text[1..3], 16), Convert.ToByte(text[3..5], 16), Convert.ToByte(text[5..7], 16));
+    }
+
+    public static Color GetContrastingTextColor(Color background)
+    {
+        static double Linearize(byte component)
+        {
+            var channel = component / 255d;
+            return channel <= 0.04045
+                ? channel / 12.92
+                : Math.Pow((channel + 0.055) / 1.055, 2.4);
+        }
+
+        var luminance =
+            0.2126 * Linearize(background.R) +
+            0.7152 * Linearize(background.G) +
+            0.0722 * Linearize(background.B);
+        var whiteContrast = 1.05 / (luminance + 0.05);
+        var blackContrast = (luminance + 0.05) / 0.05;
+        return whiteContrast >= blackContrast
+            ? Color.FromArgb(255, 255, 255, 255)
+            : Color.FromArgb(255, 0, 0, 0);
+    }
+
+    partial void OnMicrophoneBoostDbChanged(double value) =>
+        OnPropertyChanged(nameof(MicrophoneBoostLabel));
+
+    partial void OnSoundBoostDbChanged(double value) =>
+        OnPropertyChanged(nameof(SoundBoostLabel));
+
+    partial void OnNoiseGateThresholdDbChanged(double value) =>
+        OnPropertyChanged(nameof(NoiseGateThresholdLabel));
+
+    partial void OnIsMicrophoneMutedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(MicrophoneMuteLabel));
+        OnPropertyChanged(nameof(MicrophoneMuteGlyph));
+        OnPropertyChanged(nameof(MicrophoneMuteToolTip));
+    }
+
+    private void SynchronizeMicrophoneMuteState()
+    {
+        if (SelectedCaptureEndpoint is null)
+        {
+            IsMicrophoneMuted = false;
+            return;
+        }
+
+        try
+        {
+            IsMicrophoneMuted = _deviceCatalog.GetCaptureMute(SelectedCaptureEndpoint.Id);
+        }
+        catch
+        {
+            // Device refreshes can race an endpoint removal. The next notification retries.
+        }
+    }
+
+    private static bool BelongsToSameDevice(
+        AudioEndpointInfo? left,
+        AudioEndpointInfo? right) =>
+        left is not null &&
+        right is not null &&
+        !string.IsNullOrWhiteSpace(left.DeviceName) &&
+        string.Equals(
+            left.DeviceName,
+            right.DeviceName,
+            StringComparison.OrdinalIgnoreCase);
+
+    private static float DbToLinear(float decibels) =>
+        MathF.Pow(10f, decibels / 20f);
+
+    private static double LinearToDb(float linear) =>
+        Math.Clamp(20d * Math.Log10(Math.Max(linear, 0.000_001f)), -12d, 12d);
+
+    private static string FormatDecibels(double decibels) =>
+        $"{decibels:+0;-0;0} dB";
 
     private static void ReplaceCollection<T>(
         ObservableCollection<T> target,

@@ -24,16 +24,23 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="Assets\SplashScreen.scale-200.png" />
-    <Content Include="Assets\LockScreenLogo.scale-200.png" />
-    <Content Include="Assets\Square150x150Logo.scale-200.png" />
-    <Content Include="Assets\Square44x44Logo.scale-200.png" />
-    <Content Include="Assets\Square44x44Logo.targetsize-24_altform-unplated.png" />
-    <Content Include="Assets\Square44x44Logo.targetsize-48_altform-lightunplated.png" />
-    <Content Include="Assets\StoreLogo.png" />
-    <Content Include="Assets\AppIcon.ico" />
-    <Content Include="Assets\BrandMark.png" />
-    <Content Include="Assets\Wide310x150Logo.scale-200.png" />
+    <Content Include="Assets\SplashScreen-v2.scale-200.png" />
+    <Content Include="Assets\LockScreenLogo-v2.scale-200.png" />
+    <Content Include="Assets\Square150x150Logo-v2.scale-200.png" />
+    <Content Include="Assets\Square44x44Logo-v2.scale-200.png" />
+    <Content Include="Assets\Square44x44Logo-v2.targetsize-24_altform-unplated.png" />
+    <Content Include="Assets\Square44x44Logo-v2.targetsize-48_altform-lightunplated.png" />
+    <Content Include="Assets\StoreLogo-v2.png" />
+    <Content Include="Assets\AppIcon-v2.ico" />
+    <Content Include="Assets\BrandMark-v2.png" />
+    <Content Include="Assets\Wide310x150Logo-v2.scale-200.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Update="Assets\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

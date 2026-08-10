@@ -11,23 +11,53 @@
     Loaded="OnLoaded"
     mc:Ignorable="d">
 
-    <ScrollViewer>
-        <Grid
+    <Page.Resources>
+        <DataTemplate x:Key="IconPickerTemplate">
+            <StackPanel Width="56" Padding="6" ToolTipService.ToolTip="{Binding DisplayName}" AutomationProperties.Name="{Binding DisplayName}">
+                <FontIcon HorizontalAlignment="Center" Glyph="{Binding Glyph}" />
+                <TextBlock HorizontalAlignment="Center" FontSize="9" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+        </DataTemplate>
+    </Page.Resources>
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <Grid x:Name="LayoutRoot"
             MaxWidth="1540"
             Padding="32,24,32,40"
             HorizontalAlignment="Stretch"
             RowSpacing="20">
+            <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup>
+                    <VisualState x:Name="Wide"><VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="1280" /></VisualState.StateTriggers></VisualState>
+                    <VisualState x:Name="Medium"><VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="900" /></VisualState.StateTriggers><VisualState.Setters>
+                        <Setter Target="DeviceCapture.(Grid.Column)" Value="0" /><Setter Target="DeviceCapture.(Grid.Row)" Value="1" />
+                        <Setter Target="DevicePreview.(Grid.Column)" Value="1" /><Setter Target="DevicePreview.(Grid.Row)" Value="1" />
+                        <Setter Target="RouteButton.(Grid.Column)" Value="2" /><Setter Target="RouteButton.(Grid.Row)" Value="0" />
+                        <Setter Target="SoundboardCard.(Grid.ColumnSpan)" Value="2" /><Setter Target="Sidebar.(Grid.Column)" Value="0" /><Setter Target="Sidebar.(Grid.Row)" Value="1" /><Setter Target="Sidebar.(Grid.ColumnSpan)" Value="2" />
+                    </VisualState.Setters></VisualState>
+                    <VisualState x:Name="Narrow"><VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="0" /></VisualState.StateTriggers><VisualState.Setters>
+                        <Setter Target="LayoutRoot.Padding" Value="16,16,16,24" />
+                        <Setter Target="HeaderActions.(Grid.Column)" Value="0" /><Setter Target="HeaderActions.(Grid.Row)" Value="1" /><Setter Target="HeaderActions.HorizontalAlignment" Value="Left" />
+                        <Setter Target="DeviceStatus.(Grid.ColumnSpan)" Value="5" /><Setter Target="DeviceRender.(Grid.Column)" Value="0" /><Setter Target="DeviceRender.(Grid.Row)" Value="1" /><Setter Target="DeviceRender.(Grid.ColumnSpan)" Value="5" />
+                        <Setter Target="DeviceCapture.(Grid.Column)" Value="0" /><Setter Target="DeviceCapture.(Grid.Row)" Value="2" /><Setter Target="DeviceCapture.(Grid.ColumnSpan)" Value="5" />
+                        <Setter Target="DevicePreview.(Grid.Column)" Value="0" /><Setter Target="DevicePreview.(Grid.Row)" Value="3" /><Setter Target="DevicePreview.(Grid.ColumnSpan)" Value="5" />
+                        <Setter Target="RouteButton.(Grid.Column)" Value="0" /><Setter Target="RouteButton.(Grid.Row)" Value="4" /><Setter Target="RouteButton.(Grid.ColumnSpan)" Value="5" />
+                        <Setter Target="BoardActions.(Grid.Column)" Value="0" /><Setter Target="BoardActions.(Grid.Row)" Value="1" /><Setter Target="BoardActions.HorizontalAlignment" Value="Left" />
+                        <Setter Target="SoundboardCard.(Grid.ColumnSpan)" Value="2" /><Setter Target="Sidebar.(Grid.Column)" Value="0" /><Setter Target="Sidebar.(Grid.Row)" Value="1" /><Setter Target="Sidebar.(Grid.ColumnSpan)" Value="2" />
+                    </VisualState.Setters></VisualState>
+                </VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <Grid ColumnSpacing="18">
+            <Grid x:Name="HeaderGrid" ColumnSpacing="18" RowSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
 
                 <StackPanel Spacing="5">
                     <TextBlock
@@ -46,7 +76,7 @@
                         TextWrapping="Wrap" />
                 </StackPanel>
 
-                <StackPanel
+                <StackPanel x:Name="HeaderActions"
                     Grid.Column="1"
                     VerticalAlignment="Bottom"
                     Orientation="Horizontal"
@@ -55,6 +85,7 @@
                         AccessKey="B"
                         Click="OnAddSoundClick"
                         Style="{StaticResource MintButtonStyle}"
+                        AutomationProperties.Name="Browse audio files"
                         ToolTipService.ToolTip="Open the file browser and choose one or more audio files">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <FontIcon FontSize="14" Glyph="&#xE8E5;" />
@@ -62,7 +93,21 @@
                         </StackPanel>
                     </Button>
                     <Button
+                        Command="{x:Bind ViewModel.ToggleMicrophoneMuteCommand}"
+                        AutomationProperties.Name="{x:Bind ViewModel.MicrophoneMuteLabel, Mode=OneWay}"
+                        CornerRadius="12"
+                        Padding="14,10"
+                        ToolTipService.ToolTip="{x:Bind ViewModel.MicrophoneMuteToolTip, Mode=OneWay}">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon
+                                FontSize="14"
+                                Glyph="{x:Bind ViewModel.MicrophoneMuteGlyph, Mode=OneWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.MicrophoneMuteLabel, Mode=OneWay}" />
+                        </StackPanel>
+                    </Button>
+                    <Button
                         Command="{x:Bind ViewModel.StopAllCommand}"
+                        AutomationProperties.Name="Stop all playing sounds"
                         CornerRadius="12"
                         Padding="14,10">
                         <StackPanel Orientation="Horizontal" Spacing="8">
@@ -74,7 +119,7 @@
             </Grid>
 
             <Border Grid.Row="1" Style="{StaticResource GlassCardStyle}">
-                <Grid ColumnSpacing="20">
+                <Grid x:Name="DeviceGrid" ColumnSpacing="20" RowSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="1.35*" />
@@ -82,8 +127,9 @@
                         <ColumnDefinition Width="1.35*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
 
-                    <Border
+                    <Border x:Name="DeviceStatus"
                         Width="46"
                         Height="46"
                         VerticalAlignment="Center"
@@ -94,10 +140,10 @@
                             Glyph="{x:Bind ViewModel.StatusGlyph, Mode=OneWay}" />
                     </Border>
 
-                    <StackPanel Grid.Column="1" Spacing="6">
+                    <StackPanel x:Name="DeviceRender" Grid.Column="1" Spacing="6">
                         <TextBlock Text="VIRTUAL OUTPUT" Style="{StaticResource SectionLabelStyle}" />
                         <ComboBox
-                            MinWidth="210"
+                            MinWidth="120"
                             ItemsSource="{x:Bind ViewModel.RenderEndpoints}"
                             PlaceholderText="Choose an output"
                             SelectedItem="{x:Bind ViewModel.SelectedRenderEndpoint, Mode=TwoWay}"
@@ -105,10 +151,10 @@
                             DisplayMemberPath="DisplayName" />
                     </StackPanel>
 
-                    <StackPanel Grid.Column="2" Spacing="6">
+                    <StackPanel x:Name="DeviceCapture" Grid.Column="2" Spacing="6">
                         <TextBlock Text="MICROPHONE / OPTIONAL" Style="{StaticResource SectionLabelStyle}" />
                         <ComboBox
-                            MinWidth="210"
+                            MinWidth="120"
                             ItemsSource="{x:Bind ViewModel.CaptureEndpoints}"
                             PlaceholderText="Sound-only mode"
                             SelectedItem="{x:Bind ViewModel.SelectedCaptureEndpoint, Mode=TwoWay}"
@@ -116,10 +162,10 @@
                             DisplayMemberPath="DisplayName" />
                     </StackPanel>
 
-                    <StackPanel Grid.Column="3" Spacing="6">
+                    <StackPanel x:Name="DevicePreview" Grid.Column="3" Spacing="6">
                         <TextBlock Text="PRIVATE PREVIEW" Style="{StaticResource SectionLabelStyle}" />
                         <ComboBox
-                            MinWidth="210"
+                            MinWidth="120"
                             ItemsSource="{x:Bind ViewModel.PreviewEndpoints}"
                             PlaceholderText="Choose headphones"
                             SelectedItem="{x:Bind ViewModel.SelectedPreviewEndpoint, Mode=TwoWay}"
@@ -127,7 +173,7 @@
                             DisplayMemberPath="DisplayName" />
                     </StackPanel>
 
-                    <Button
+                    <Button x:Name="RouteButton"
                         Grid.Column="4"
                         MinWidth="142"
                         VerticalAlignment="Bottom"
@@ -141,20 +187,28 @@
                 </Grid>
             </Border>
 
-            <Grid Grid.Row="2" ColumnSpacing="20">
+            <Grid x:Name="WorkspaceGrid" Grid.Row="2" ColumnSpacing="20">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="310" />
                 </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-                <Border Style="{StaticResource GlassCardStyle}">
+                <Border x:Name="SoundboardCard" Style="{StaticResource GlassCardStyle}">
                     <Grid RowSpacing="16">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <Grid>
+                        <Grid RowSpacing="12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
                             <StackPanel Orientation="Horizontal" Spacing="12">
                                 <StackPanel>
                                     <TextBlock Text="SOUNDBOARD" Style="{StaticResource SectionLabelStyle}" />
@@ -165,7 +219,7 @@
                                         FontWeight="SemiBold" />
                                 </StackPanel>
                             </StackPanel>
-                            <StackPanel
+                            <StackPanel x:Name="BoardActions"
                                 HorizontalAlignment="Right"
                                 Orientation="Horizontal"
                                 Spacing="8">
@@ -179,11 +233,13 @@
                                 </Button>
                                 <ComboBox
                                     MinWidth="170"
+                                    AutomationProperties.Name="Active profile"
                                     ItemsSource="{x:Bind ViewModel.Profiles}"
                                     SelectedItem="{x:Bind ViewModel.SelectedProfile, Mode=TwoWay}"
                                     DisplayMemberPath="Name" />
                                 <Button
-                                    Command="{x:Bind ViewModel.AddProfileCommand}"
+                                    Click="OnAddProfileClick"
+                                    AutomationProperties.Name="Create a named profile"
                                     ToolTipService.ToolTip="Create profile">
                                     <FontIcon FontSize="14" Glyph="&#xE710;" />
                                 </Button>
@@ -211,7 +267,7 @@
                                         Margin="0,0,12,12"
                                         Padding="16"
                                         Background="#B51E2428"
-                                        BorderBrush="#20FFFFFF"
+                                        BorderBrush="{x:Bind AccentBrush}"
                                         BorderThickness="1"
                                         CornerRadius="16">
                                         <Grid>
@@ -225,17 +281,19 @@
                                                     Width="34"
                                                     Height="34"
                                                     HorizontalAlignment="Left"
-                                                    Background="#199FE7D7"
+                                                    Background="{x:Bind AccentBrush}"
                                                     CornerRadius="10">
                                                     <FontIcon
                                                         FontSize="15"
-                                                        Foreground="{StaticResource MintAccentBrush}"
+                                                        Foreground="{x:Bind IconForeground}"
                                                         Glyph="{x:Bind Glyph}" />
                                                 </Border>
-                                                <Button
-                                                    HorizontalAlignment="Right"
-                                                    Command="{x:Bind PreviewCommand}"
-                                                    ToolTipService.ToolTip="Preview only">
+                                             <Button
+                                                 HorizontalAlignment="Right"
+                                                 Click="OnPreviewPadClick"
+                                                 CommandParameter="{x:Bind}"
+                                                 AutomationProperties.Name="Preview sound privately"
+                                                 ToolTipService.ToolTip="Preview only">
                                                     <FontIcon FontSize="13" Glyph="&#xE767;" />
                                                 </Button>
                                             </Grid>
@@ -243,10 +301,11 @@
                                                 Grid.Row="1"
                                                 HorizontalContentAlignment="Left"
                                                 VerticalContentAlignment="Bottom"
-                                                Background="Transparent"
-                                                BorderThickness="0"
-                                                Command="{x:Bind PlayCommand}"
-                                                Padding="0">
+                                                 Background="Transparent"
+                                                 BorderThickness="0"
+                                                 Click="OnPlayPadClick"
+                                                 CommandParameter="{x:Bind}"
+                                                 Padding="0">
                                                 <StackPanel>
                                                     <TextBlock
                                                         MaxWidth="165"
@@ -265,19 +324,39 @@
                                                 Grid.Row="2"
                                                 HorizontalAlignment="Left"
                                                 Click="OnSetHotkeyClick"
-                                                Content="{x:Bind Subtitle}"
+                                                AutomationProperties.Name="Set shortcut"
+                                                Content="{x:Bind ShortcutLabel}"
                                                 FontSize="11"
                                                 Padding="6,3"
                                                 ToolTipService.ToolTip="Set global shortcut" />
                                             <Button
-                                                Grid.Row="2"
-                                                HorizontalAlignment="Right"
-                                                Command="{x:Bind StopCommand}"
-                                                ToolTipService.ToolTip="Stop this sound">
-                                                <FontIcon FontSize="11" Glyph="&#xE71A;" />
+                                                Grid.Row="0"
+                                                HorizontalAlignment="Center"
+                                                CommandParameter="{x:Bind}"
+                                                Click="OnEditPadClick"
+                                                AutomationProperties.Name="Edit sound pad"
+                                                ToolTipService.ToolTip="Edit sound pad">
+                                                <FontIcon FontSize="13" Glyph="&#xE70F;" />
                                             </Button>
-                                        </Grid>
-                                    </Border>
+                                             <Button
+                                                 Grid.Row="2"
+                                                 HorizontalAlignment="Right"
+                                                 Command="{x:Bind StopCommand}"
+                                                AutomationProperties.Name="Stop this sound"
+                                                ToolTipService.ToolTip="Stop this sound">
+                                                 <FontIcon FontSize="11" Glyph="&#xE71A;" />
+                                             </Button>
+                                             <Button
+                                                 Grid.Row="2"
+                                                 HorizontalAlignment="Center"
+                                                 Click="OnRemovePadClick"
+                                                 CommandParameter="{x:Bind}"
+                                                 AutomationProperties.Name="Remove sound from board"
+                                                 ToolTipService.ToolTip="Remove sound from this profile">
+                                                 <FontIcon FontSize="11" Glyph="&#xE74D;" />
+                                             </Button>
+                                         </Grid>
+                                     </Border>
                                 </DataTemplate>
                             </GridView.ItemTemplate>
                         </GridView>
@@ -303,7 +382,7 @@
                     </Grid>
                 </Border>
 
-                <StackPanel Grid.Column="1" Spacing="20">
+                <StackPanel x:Name="Sidebar" Grid.Column="1" Spacing="20">
                     <Border Style="{StaticResource GlassCardStyle}">
                         <StackPanel Spacing="14">
                             <TextBlock Text="ROUTE STATUS" Style="{StaticResource SectionLabelStyle}" />
@@ -327,6 +406,96 @@
                                     <TextBlock Text="Refresh devices" />
                                 </StackPanel>
                             </Button>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource GlassCardStyle}">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="MIX CONTROL" Style="{StaticResource SectionLabelStyle}" />
+                            <TextBlock
+                                Foreground="{StaticResource MutedTextBrush}"
+                                Text="Level the voice before Discord and keep microphone noise closed while you are silent."
+                                TextWrapping="Wrap" />
+
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock FontWeight="SemiBold" Text="Microphone boost" />
+                                <TextBlock
+                                    Grid.Column="1"
+                                    Foreground="{StaticResource MutedTextBrush}"
+                                    Text="{x:Bind ViewModel.MicrophoneBoostLabel, Mode=OneWay}" />
+                            </Grid>
+                            <Slider
+                                AutomationProperties.Name="Microphone boost in decibels"
+                                Minimum="-12"
+                                Maximum="12"
+                                StepFrequency="1"
+                                Value="{x:Bind ViewModel.MicrophoneBoostDb, Mode=TwoWay}" />
+
+                            <ToggleSwitch
+                                Header="Voice leveling"
+                                IsOn="{x:Bind ViewModel.VoiceProcessingEnabled, Mode=TwoWay}"
+                                OffContent="Raw microphone"
+                                OnContent="Compressor + 80 Hz filter" />
+                            <ToggleSwitch
+                                Header="Microphone noise gate"
+                                IsOn="{x:Bind ViewModel.NoiseGateEnabled, Mode=TwoWay}"
+                                OffContent="Always open"
+                                OnContent="Closes background noise" />
+
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock FontWeight="SemiBold" Text="Gate threshold" />
+                                <TextBlock
+                                    Grid.Column="1"
+                                    Foreground="{StaticResource MutedTextBrush}"
+                                    Text="{x:Bind ViewModel.NoiseGateThresholdLabel, Mode=OneWay}" />
+                            </Grid>
+                            <Slider
+                                AutomationProperties.Name="Microphone noise gate threshold in decibels"
+                                IsEnabled="{x:Bind ViewModel.NoiseGateEnabled, Mode=OneWay}"
+                                Minimum="-70"
+                                Maximum="-25"
+                                StepFrequency="1"
+                                Value="{x:Bind ViewModel.NoiseGateThresholdDb, Mode=TwoWay}" />
+
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock FontWeight="SemiBold" Text="Soundboard boost" />
+                                <TextBlock
+                                    Grid.Column="1"
+                                    Foreground="{StaticResource MutedTextBrush}"
+                                    Text="{x:Bind ViewModel.SoundBoostLabel, Mode=OneWay}" />
+                            </Grid>
+                            <Slider
+                                AutomationProperties.Name="Soundboard boost in decibels"
+                                Minimum="-12"
+                                Maximum="12"
+                                StepFrequency="1"
+                                Value="{x:Bind ViewModel.SoundBoostDb, Mode=TwoWay}" />
+
+                            <Button
+                                HorizontalAlignment="Left"
+                                Command="{x:Bind ViewModel.ApplyMixSettingsCommand}"
+                                Content="Apply mix live"
+                                Style="{StaticResource MintButtonStyle}" />
+                            <TextBlock
+                                Foreground="{StaticResource MutedTextBrush}"
+                                Text="Start around +3 dB mic and −50 dB gate. Raise the gate only until idle noise closes."
+                                TextWrapping="Wrap" />
+                            <TextBlock
+                                Foreground="{StaticResource MutedTextBrush}"
+                                Text="Discord can still gate or suppress the mixed input. Use its Mic Test and Voice Activity settings; OpenMicBoard cannot override processing inside another app."
+                                TextWrapping="Wrap" />
                         </StackPanel>
                     </Border>
 

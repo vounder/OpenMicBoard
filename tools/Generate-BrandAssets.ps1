@@ -6,63 +6,55 @@ Add-Type -AssemblyName System.Drawing
 
 $root = Split-Path -Parent $PSScriptRoot
 $assetDirectory = Join-Path $root 'src\OpenMicBoard.App\Assets'
+$masterPath = Join-Path $assetDirectory 'BrandMark-v2.png'
+if (-not (Test-Path -LiteralPath $masterPath -PathType Leaf)) {
+    throw "Brand master not found: $masterPath"
+}
+
+$master = [System.Drawing.Bitmap]::FromFile($masterPath)
 
 function New-MarkBitmap {
     param(
         [int] $Width,
         [int] $Height,
-        [double] $Scale = 0.68
+        [double] $Scale = 0.86
     )
 
-    $bitmap = [System.Drawing.Bitmap]::new($Width, $Height)
+    $bitmap = [System.Drawing.Bitmap]::new(
+        $Width,
+        $Height,
+        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $bitmap.SetResolution(96, 96)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $graphics.Clear([System.Drawing.Color]::Transparent)
+    try {
+        $graphics.Clear([System.Drawing.Color]::Transparent)
+        $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceOver
+        $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
 
-    $size = [Math]::Min($Width, $Height) * $Scale
-    $left = ($Width - $size) / 2
-    $top = ($Height - $size) / 2
-    $radius = $size * 0.23
-    $path = [System.Drawing.Drawing2D.GraphicsPath]::new()
-    $diameter = $radius * 2
-    $path.AddArc($left, $top, $diameter, $diameter, 180, 90)
-    $path.AddArc($left + $size - $diameter, $top, $diameter, $diameter, 270, 90)
-    $path.AddArc($left + $size - $diameter, $top + $size - $diameter, $diameter, $diameter, 0, 90)
-    $path.AddArc($left, $top + $size - $diameter, $diameter, $diameter, 90, 90)
-    $path.CloseFigure()
-    $background = [System.Drawing.SolidBrush]::new(
-        [System.Drawing.Color]::FromArgb(255, 16, 19, 21))
-    $graphics.FillPath($background, $path)
+        $size = [Math]::Min($Width, $Height) * $Scale
+        $left = ($Width - $size) / 2
+        $top = ($Height - $size) / 2
+        $destination = [System.Drawing.RectangleF]::new($left, $top, $size, $size)
+        $graphics.DrawImage($master, $destination)
+    }
+    finally {
+        $graphics.Dispose()
+    }
 
-    $points = @(
-        [System.Drawing.PointF]::new($left + ($size * 0.20), $top + ($size * 0.53)),
-        [System.Drawing.PointF]::new($left + ($size * 0.29), $top + ($size * 0.53)),
-        [System.Drawing.PointF]::new($left + ($size * 0.35), $top + ($size * 0.38)),
-        [System.Drawing.PointF]::new($left + ($size * 0.43), $top + ($size * 0.68)),
-        [System.Drawing.PointF]::new($left + ($size * 0.52), $top + ($size * 0.27)),
-        [System.Drawing.PointF]::new($left + ($size * 0.61), $top + ($size * 0.61)),
-        [System.Drawing.PointF]::new($left + ($size * 0.67), $top + ($size * 0.43)),
-        [System.Drawing.PointF]::new($left + ($size * 0.73), $top + ($size * 0.53)),
-        [System.Drawing.PointF]::new($left + ($size * 0.80), $top + ($size * 0.53))
-    )
-    $pen = [System.Drawing.Pen]::new(
-        [System.Drawing.Color]::FromArgb(255, 159, 231, 215),
-        [Math]::Max(2, $size * 0.066))
-    $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-    $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
-    $graphics.DrawLines($pen, $points)
-
-    $pen.Dispose()
-    $background.Dispose()
-    $path.Dispose()
-    $graphics.Dispose()
     return $bitmap
 }
 
 function Save-Png {
-    param([string] $Name, [int] $Width, [int] $Height, [double] $Scale = 0.68)
+    param(
+        [string] $Name,
+        [int] $Width,
+        [int] $Height,
+        [double] $Scale = 0.86
+    )
+
     $bitmap = New-MarkBitmap -Width $Width -Height $Height -Scale $Scale
     try {
         $bitmap.Save(
@@ -74,31 +66,35 @@ function Save-Png {
     }
 }
 
-Save-Png 'Square150x150Logo.scale-200.png' 300 300 0.82
-Save-Png 'Square44x44Logo.scale-200.png' 88 88 0.90
-Save-Png 'Square44x44Logo.targetsize-24_altform-unplated.png' 24 24 1.00
-Save-Png 'Square44x44Logo.targetsize-48_altform-lightunplated.png' 48 48 0.96
-Save-Png 'StoreLogo.png' 50 50 0.90
-Save-Png 'LockScreenLogo.scale-200.png' 48 48 0.90
-Save-Png 'Wide310x150Logo.scale-200.png' 620 300 0.70
-Save-Png 'SplashScreen.scale-200.png' 1240 600 0.48
-Save-Png 'BrandMark.png' 1024 1024 0.86
-
-$iconBitmap = New-MarkBitmap -Width 256 -Height 256 -Scale 0.90
 try {
-    $handle = $iconBitmap.GetHicon()
-    $icon = [System.Drawing.Icon]::FromHandle($handle)
-    $stream = [System.IO.File]::Create((Join-Path $assetDirectory 'AppIcon.ico'))
+    Save-Png 'Square150x150Logo-v2.scale-200.png' 300 300 1.00
+    Save-Png 'Square44x44Logo-v2.scale-200.png' 88 88 1.00
+    Save-Png 'Square44x44Logo-v2.targetsize-24_altform-unplated.png' 24 24 1.12
+    Save-Png 'Square44x44Logo-v2.targetsize-48_altform-lightunplated.png' 48 48 1.06
+    Save-Png 'StoreLogo-v2.png' 50 50 1.04
+    Save-Png 'LockScreenLogo-v2.scale-200.png' 48 48 1.06
+    Save-Png 'Wide310x150Logo-v2.scale-200.png' 620 300 0.96
+    Save-Png 'SplashScreen-v2.scale-200.png' 1240 600 0.76
+
+    $iconBitmap = New-MarkBitmap -Width 256 -Height 256 -Scale 1.04
     try {
-        $icon.Save($stream)
+        $handle = $iconBitmap.GetHicon()
+        $icon = [System.Drawing.Icon]::FromHandle($handle)
+        $stream = [System.IO.File]::Create((Join-Path $assetDirectory 'AppIcon-v2.ico'))
+        try {
+            $icon.Save($stream)
+        }
+        finally {
+            $stream.Dispose()
+            $icon.Dispose()
+        }
     }
     finally {
-        $stream.Dispose()
-        $icon.Dispose()
+        $iconBitmap.Dispose()
     }
 }
 finally {
-    $iconBitmap.Dispose()
+    $master.Dispose()
 }
 
-Write-Host "Generated brand assets in $assetDirectory"
+Write-Host "Generated OpenMicBoard v2 brand assets from $masterPath"

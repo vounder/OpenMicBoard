@@ -139,6 +139,33 @@ public sealed class SoundLibrary(string libraryDirectory)
             : asset.FilePath;
 
     public bool IsMissing(SoundAsset asset) => !File.Exists(ResolvePath(asset));
+
+    public bool DeleteManaged(SoundAsset asset)
+    {
+        ArgumentNullException.ThrowIfNull(asset);
+        if (asset.Kind != SoundAssetKind.Managed)
+        {
+            return false;
+        }
+
+        var libraryRoot = System.IO.Path.GetFullPath(libraryDirectory)
+            .TrimEnd(System.IO.Path.DirectorySeparatorChar) +
+            System.IO.Path.DirectorySeparatorChar;
+        var managedPath = System.IO.Path.GetFullPath(ResolvePath(asset));
+        if (!managedPath.StartsWith(libraryRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Managed sound path escaped the private library.");
+        }
+
+        if (!File.Exists(managedPath))
+        {
+            return false;
+        }
+
+        File.Delete(managedPath);
+        return true;
+    }
 }
 
 /// <summary>

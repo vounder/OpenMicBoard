@@ -23,7 +23,7 @@
             Subtitle="Local audio routing"
             Title="OpenMicBoard">
             <TitleBar.IconSource>
-                <ImageIconSource ImageSource="Assets/AppIcon.ico" />
+                <ImageIconSource ImageSource="Assets/AppIcon-v2.ico" />
             </TitleBar.IconSource>
         </TitleBar>
         <Frame x:Name="RootFrame" Grid.Row="1" />
